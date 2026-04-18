@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+@layer utilities {
+  @keyframes highlight-blue {
+    0% { background-color: theme('colors.blue.100'); }
+    100% { background-color: transparent; }
+  }
+  .animate-highlight-blue {
+    animation: highlight-blue 2s ease-out forwards;
+  }
+}
