@@ -89,31 +89,14 @@ export default function App() {
     setRecords(prev => [newRecord, ...prev]);
     setLastScannedId(newId);
     
-    /*上手くいかなかったため保留
     try {
-      await fetch('http://localhost:3030/save-scan', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          last5,
-          location: settings.location
-        }),
+      await window.ipcRenderer.invoke('save-scan', {
+        last5,
+        location: settings.location
       });
     } catch (error) {
-      console.error('Failed to send scan to server:', error);
-    }*/
-    /* あり得ない代替案 by gemini
-    const buffer = Buffer.alloc(2);
-    buffer.writeUInt16BE(parseInt(last5, 10), 0);
-    const uint16 = new Uint16Array(parseInt(last5, 10));
-    const blob = new Blob([uint16], { type: 'application/octet-stream' });
-    fs.appendFile('ids.bin', blob, (err) => {
-      if (err) {
-        console.error('Failed to save scan to file:', err);
-      }
-    });*/
+      console.error('Failed to send scan to main process:', error);
+    }
   }, [settings.location, records]);
 
   //スキャナ．常時キー入力を監視して読み取った値を入力しているが，最後にエンター必須．

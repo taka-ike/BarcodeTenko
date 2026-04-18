@@ -1,14 +1,33 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import express from 'express'
 import fs from 'node:fs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SCANS_DIR = path.join(process.cwd(), 'scans')
+
+// Portable logic: Get the directory where the EXE is located
+const getBaseDir = () => {
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    return process.env.PORTABLE_EXECUTABLE_DIR
+  }
+  if (app.isPackaged) {
+    return path.dirname(process.executablePath)
+  }
+  return process.cwd()
+}
+
+const BASE_DIR = getBaseDir()
+const SCANS_DIR = path.join(BASE_DIR, 'scans')
+const DATA_DIR = path.join(BASE_DIR, 'data')
+
+// Redirect all Electron data (including LocalStorage) to the local 'data' folder
+if (app.isPackaged || process.env.PORTABLE_EXECUTABLE_DIR) {
+  app.setPath('userData', DATA_DIR)
+  app.setPath('sessionData', DATA_DIR)
+}
 
 if (!fs.existsSync(SCANS_DIR)) {
-  fs.mkdirSync(SCANS_DIR)
+  fs.mkdirSync(SCANS_DIR, { recursive: true })
 }
 
 // The built directory structure
@@ -51,38 +70,24 @@ function createWindow() {
   }
 }
 
-// Start Express Server
-function startExpress() {
-  const appExpress = express()
-  const PORT = 3030
+// IPC Handlers
+ipcMain.handle('save-scan', async (_event, { last5, location }) => {
+  if (!last5) return { success: false, error: 'No last5 provided' }
 
-  appExpress.use(express.json())
-
-  appExpress.post('/save-scan', (req, res) => {
-    const { last5, location } = req.body;
-    if (last5) {
-      const fileName = `ids_${location}.bin`;
-      const filePath = path.join(SCANS_DIR, fileName);
-      
-      const buffer = Buffer.alloc(2);
-      buffer.writeUInt16LE(parseInt(last5, 10), 0);
-      
-      try {
-        fs.appendFileSync(filePath, buffer);
-        res.status(200).send({ success: true });
-      } catch (err) {
-        console.error('Failed to write to file:', err);
-        res.status(500).send({ success: false });
-      }
-    } else {
-      res.status(400).send({ success: false });
-    }
-  });
-
-  appExpress.listen(PORT, 'localhost', () => {
-    console.log(`Server running on http://localhost:${PORT}`)
-  })
-}
+  const fileName = `ids_${location || 'unknown'}.bin`
+  const filePath = path.join(SCANS_DIR, fileName)
+  
+  const buffer = Buffer.alloc(2)
+  buffer.writeUInt16LE(parseInt(last5, 10), 0)
+  
+  try {
+    fs.appendFileSync(filePath, buffer)
+    return { success: true }
+  } catch (err) {
+    console.error('Failed to write to file:', err)
+    return { success: false, error: err.message }
+  }
+})
 
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
@@ -103,6 +108,5 @@ app.on('activate', () => {
 })
 
 app.whenReady().then(() => {
-  startExpress()
   createWindow()
 })
