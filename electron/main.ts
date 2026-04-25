@@ -33,6 +33,8 @@ const SCAN_FILE_SUFFIX = '.bin'
 const getScanFilePath = (location?: string) =>
   path.join(SCANS_DIR, `${SCAN_FILE_PREFIX}${location || 'unknown'}${SCAN_FILE_SUFFIX}`)
 
+const sanitizeScanName = (rawName: string) => rawName.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+
 // Redirect all Electron data (including LocalStorage) to the local 'data' folder
 if (app.isPackaged || process.env.PORTABLE_EXECUTABLE_DIR) {
   app.setPath('userData', DATA_DIR)
@@ -190,6 +192,51 @@ ipcMain.handle('clear-all-scans', async () => {
   } catch (err) {
     const error = err as Error
     console.error('Failed to clear scan files:', err)
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('rename-scan-file', async (_event, { location, newName }) => {
+  if (!location || typeof location !== 'string') {
+    return { success: false, error: 'Invalid location' }
+  }
+  if (!newName || typeof newName !== 'string') {
+    return { success: false, error: 'Invalid newName' }
+  }
+
+  const sanitizedName = sanitizeScanName(newName)
+  if (!sanitizedName) {
+    return { success: false, error: 'New name is empty' }
+  }
+
+  const sourcePath = getScanFilePath(location)
+  const destinationPath = getScanFilePath(sanitizedName)
+
+  if (sourcePath === destinationPath) {
+    return { success: true, newName: sanitizedName }
+  }
+
+  try {
+    await storageReady
+
+    try {
+      await fs.promises.access(destinationPath, fs.constants.F_OK)
+      return { success: false, error: 'Destination already exists' }
+    } catch (err) {
+      const accessError = err as NodeJS.ErrnoException
+      if (accessError.code !== 'ENOENT') {
+        throw accessError
+      }
+    }
+
+    await fs.promises.rename(sourcePath, destinationPath)
+    return { success: true, newName: sanitizedName }
+  } catch (err) {
+    const error = err as NodeJS.ErrnoException
+    if (error.code === 'ENOENT') {
+      return { success: false, error: 'Source file not found' }
+    }
+    console.error('Failed to rename scan file:', err)
     return { success: false, error: error.message }
   }
 })

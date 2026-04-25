@@ -19,6 +19,7 @@ const STORAGE_KEYS = {
 const SCANNER_RESET_MS = 100;
 const SCANNER_LENGTH = 10;
 const ERROR_DISPLAY_MS = 300;
+const WARNING_DISPLAY_MS = 3000;
 const MANUAL_LENGTHS = new Set([5, 10]);
 
 const DIGITS_ONLY = /^\d+$/;
@@ -43,6 +44,7 @@ export default function App() {
   const [manualBarcode, setManualBarcode] = useState('');
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanWarning, setScanWarning] = useState<string | null>(null);
+  const [conflictLocation, setConflictLocation] = useState<string | null>(null);
   const [location, setLocation] = useState('');
   const [lastScannedId, setLastScannedId] = useState<string | null>(null);
 
@@ -127,13 +129,21 @@ export default function App() {
     warningTimerRef.current = window.setTimeout(() => {
       setScanWarning(null);
       warningTimerRef.current = undefined;
-    }, 3000);
+    }, WARNING_DISPLAY_MS);
   }, []);
 
-  const focusManualInput = useCallback(() => {
-    window.setTimeout(() => {
-      manualInputRef.current?.focus();
-    }, 0);
+  const recoverManualInput = useCallback(() => {
+    scannerBufferRef.current = '';
+    window.requestAnimationFrame(() => {
+      const input = manualInputRef.current;
+      if (!input) {
+        return;
+      }
+      input.blur();
+      input.focus();
+      const cursor = input.value.length;
+      input.setSelectionRange(cursor, cursor);
+    });
   }, []);
 
   const handleScan = useCallback(
@@ -184,6 +194,7 @@ export default function App() {
 
   useEffect(() => {
     if (!location) {
+      setConflictLocation(null);
       return;
     }
 
@@ -191,20 +202,23 @@ export default function App() {
       try {
         const result = await window.ipcRenderer.invoke('has-scan-data', { location });
         if (result?.success && result?.hasData) {
-          triggerWarning(`注意: scans に「${location}」の既存データがあります`);
+          setConflictLocation(location);
+          return;
         }
+        setConflictLocation((prev) => (prev === location ? null : prev));
       } catch (error) {
         console.error('Failed to check existing scan data:', error);
       }
     };
 
     void checkExistingLocationData();
-  }, [location, triggerWarning]);
+  }, [location]);
 
   useEffect(() => {
     const handleGlobalKeyDown = (event: KeyboardEvent) => {
       const target = event.target;
       if (
+        document.activeElement === manualInputRef.current ||
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement ||
@@ -274,7 +288,8 @@ export default function App() {
       setRecords([]);
       setLastScannedId(null);
       setScanWarning(null);
-      focusManualInput();
+      setConflictLocation(null);
+      recoverManualInput();
 
       try {
         const result = await window.ipcRenderer.invoke('clear-all-scans');
@@ -286,13 +301,13 @@ export default function App() {
         triggerError('履歴ファイルの削除に失敗しました');
       }
     }
-  }, [focusManualInput, triggerError]);
+  }, [recoverManualInput, triggerError]);
 
   const deleteRecord = useCallback(async (record: ScanRecord) => {
     if (window.confirm('この記録を削除しますか？')) {
       setRecords((prev) => prev.filter((current) => current.id !== record.id));
       setLastScannedId((prev) => (prev === record.id ? null : prev));
-      focusManualInput();
+      recoverManualInput();
 
       try {
         const result = await window.ipcRenderer.invoke('delete-scan-value', {
@@ -307,7 +322,54 @@ export default function App() {
         triggerError('バイナリ同期に失敗しました');
       }
     }
-  }, [focusManualInput, triggerError]);
+  }, [recoverManualInput, triggerError]);
+
+  const renameConflictFile = useCallback(async () => {
+    if (!conflictLocation) {
+      return;
+    }
+
+    const suggestedName = `${conflictLocation}_backup_${format(new Date(), 'yyyyMMdd_HHmmss')}`;
+    const newName = window.prompt(
+      '既存ファイル名を変更します。新しい名前を入力してください（ids_ と .bin は不要）',
+      suggestedName
+    );
+
+    if (newName === null) {
+      recoverManualInput();
+      return;
+    }
+
+    if (!newName.trim()) {
+      triggerError('新しいファイル名を入力してください');
+      recoverManualInput();
+      return;
+    }
+
+    try {
+      const result = await window.ipcRenderer.invoke('rename-scan-file', {
+        location: conflictLocation,
+        newName,
+      });
+
+      if (!result?.success) {
+        triggerError(`ファイル名変更に失敗しました: ${result?.error ?? 'unknown error'}`);
+        recoverManualInput();
+        return;
+      }
+
+      if (location === conflictLocation) {
+        setConflictLocation(null);
+      }
+
+      triggerWarning(`既存ファイルを ids_${result.newName}.bin に変更しました`);
+      recoverManualInput();
+    } catch (error) {
+      console.error('Failed to rename scan file:', error);
+      triggerError('ファイル名変更に失敗しました');
+      recoverManualInput();
+    }
+  }, [conflictLocation, location, recoverManualInput, triggerError, triggerWarning]);
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
@@ -338,8 +400,15 @@ export default function App() {
               type="text"
               maxLength={18}
               placeholder="数字を入力（判定は送信時）"
+              inputMode="numeric"
               value={manualBarcode}
               onChange={(event) => setManualBarcode(keepDigits(event.target.value))}
+              onFocus={() => {
+                scannerBufferRef.current = '';
+              }}
+              onKeyDownCapture={(event) => {
+                event.stopPropagation();
+              }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   submitManualBarcode();
@@ -463,6 +532,33 @@ export default function App() {
         </div>
       )}
 
+      {conflictLocation && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[95]">
+          <div className="bg-amber-500 text-white px-4 py-3 rounded-xl shadow-xl flex items-center gap-3">
+            <span className="text-sm font-semibold">
+              注意: scans\ids_{conflictLocation}.bin が既に存在します
+            </span>
+            <button
+              onClick={() => {
+                void renameConflictFile();
+              }}
+              className="px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-xs font-bold transition-colors"
+            >
+              ファイル名変更
+            </button>
+            <button
+              onClick={() => {
+                setConflictLocation(null);
+                recoverManualInput();
+              }}
+              className="px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-xs font-bold transition-colors"
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
       {isSettingsOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
@@ -502,7 +598,10 @@ export default function App() {
 
             <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end">
               <button
-                onClick={() => setIsSettingsOpen(false)}
+                onClick={() => {
+                  setIsSettingsOpen(false);
+                  recoverManualInput();
+                }}
                 className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
               >
                 完了
