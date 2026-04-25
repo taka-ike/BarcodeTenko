@@ -45,6 +45,8 @@ export default function App() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanWarning, setScanWarning] = useState<string | null>(null);
   const [conflictLocation, setConflictLocation] = useState<string | null>(null);
+  const [renameInput, setRenameInput] = useState('');
+  const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [location, setLocation] = useState('');
   const [lastScannedId, setLastScannedId] = useState<string | null>(null);
 
@@ -329,18 +331,7 @@ export default function App() {
       return;
     }
 
-    const suggestedName = `${conflictLocation}_backup_${format(new Date(), 'yyyyMMdd_HHmmss')}`;
-    const newName = window.prompt(
-      '既存ファイル名を変更します。新しい名前を入力してください（ids_ と .bin は不要）',
-      suggestedName
-    );
-
-    if (newName === null) {
-      recoverManualInput();
-      return;
-    }
-
-    if (!newName.trim()) {
+    if (!renameInput.trim()) {
       triggerError('新しいファイル名を入力してください');
       recoverManualInput();
       return;
@@ -349,7 +340,7 @@ export default function App() {
     try {
       const result = await window.ipcRenderer.invoke('rename-scan-file', {
         location: conflictLocation,
-        newName,
+        newName: renameInput.trim(),
       });
 
       if (!result?.success) {
@@ -363,13 +354,15 @@ export default function App() {
       }
 
       triggerWarning(`既存ファイルを ids_${result.newName}.bin に変更しました`);
+      setIsRenameDialogOpen(false);
+      setRenameInput('');
       recoverManualInput();
     } catch (error) {
       console.error('Failed to rename scan file:', error);
       triggerError('ファイル名変更に失敗しました');
       recoverManualInput();
     }
-  }, [conflictLocation, location, recoverManualInput, triggerError, triggerWarning]);
+  }, [conflictLocation, location, recoverManualInput, renameInput, triggerError, triggerWarning]);
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
@@ -393,7 +386,13 @@ export default function App() {
       </div>
 
       <main className="max-w-5xl mx-auto p-6 space-y-6">
-        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col sm:flex-row items-start sm:items-center gap-3">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitManualBarcode();
+          }}
+          className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col sm:flex-row items-start sm:items-center gap-3"
+        >
           <div className="flex-1 w-full">
             <input
               ref={manualInputRef}
@@ -409,22 +408,17 @@ export default function App() {
               onKeyDownCapture={(event) => {
                 event.stopPropagation();
               }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  submitManualBarcode();
-                }
-              }}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
             />
           </div>
           <button
-            onClick={submitManualBarcode}
+            type="submit"
             disabled={manualBarcode.length < 5}
             className="w-full sm:w-auto px-6 py-2 bg-gray-800 text-white font-medium rounded-lg hover:bg-gray-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             送信
           </button>
-        </div>
+        </form>
 
         <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
           <div className="flex items-center gap-4">
@@ -536,11 +530,12 @@ export default function App() {
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[95]">
           <div className="bg-amber-500 text-white px-4 py-3 rounded-xl shadow-xl flex items-center gap-3">
             <span className="text-sm font-semibold">
-              注意: scans\ids_{conflictLocation}.bin が既に存在します
+              {`注意: scans\\ids_${conflictLocation}.bin が既に存在します`}
             </span>
             <button
               onClick={() => {
-                void renameConflictFile();
+                setRenameInput(`${conflictLocation}_backup_${format(new Date(), 'yyyyMMdd_HHmmss')}`);
+                setIsRenameDialogOpen(true);
               }}
               className="px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-xs font-bold transition-colors"
             >
@@ -556,6 +551,50 @@ export default function App() {
               閉じる
             </button>
           </div>
+        </div>
+      )}
+
+      {isRenameDialogOpen && conflictLocation && (
+        <div className="fixed inset-0 bg-black/40 z-[110] flex items-center justify-center p-4">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void renameConflictFile();
+            }}
+            className="w-full max-w-md bg-white rounded-xl shadow-2xl p-5 space-y-4"
+          >
+            <h3 className="text-base font-bold text-gray-900">既存ファイル名の変更</h3>
+            <p className="text-sm text-gray-600">
+              {`ids_${conflictLocation}.bin を別名へ変更します（ids_ と .bin は自動付与）`}
+            </p>
+            <input
+              type="text"
+              value={renameInput}
+              onChange={(event) => setRenameInput(event.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              placeholder="新しいファイル名"
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRenameDialogOpen(false);
+                  setRenameInput('');
+                  recoverManualInput();
+                }}
+                className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 text-sm font-medium"
+              >
+                キャンセル
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm font-medium"
+              >
+                変更する
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
