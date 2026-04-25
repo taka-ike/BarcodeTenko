@@ -3,3 +3,5 @@ dist-electron/
 node_modules/
 release/
 package-lock.json
+.github/
+.vscode/

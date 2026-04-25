@@ -1,5 +1,25 @@
 @import "tailwindcss";
 
+@layer base {
+  :root {
+    font-family:
+      "BIZ UDPGothic",
+      "Yu Gothic UI",
+      "Hiragino Kaku Gothic ProN",
+      "Meiryo",
+      "Noto Sans JP",
+      system-ui,
+      sans-serif;
+  }
+
+  body {
+    font-feature-settings: "palt";
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.6;
+  }
+}
+
 @layer utilities {
   @keyframes highlight-blue {
     0% { background-color: theme('colors.blue.100'); }

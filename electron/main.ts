@@ -20,14 +20,23 @@ const BASE_DIR = getBaseDir()
 const SCANS_DIR = path.join(BASE_DIR, 'scans')
 const DATA_DIR = path.join(BASE_DIR, 'data')
 
+const ensureStorageDirs = () =>
+  Promise.all([
+    fs.promises.mkdir(SCANS_DIR, { recursive: true }),
+    fs.promises.mkdir(DATA_DIR, { recursive: true }),
+  ])
+
+const storageReady = ensureStorageDirs()
+const SCAN_FILE_PREFIX = 'ids_'
+const SCAN_FILE_SUFFIX = '.bin'
+
+const getScanFilePath = (location?: string) =>
+  path.join(SCANS_DIR, `${SCAN_FILE_PREFIX}${location || 'unknown'}${SCAN_FILE_SUFFIX}`)
+
 // Redirect all Electron data (including LocalStorage) to the local 'data' folder
 if (app.isPackaged || process.env.PORTABLE_EXECUTABLE_DIR) {
   app.setPath('userData', DATA_DIR)
   app.setPath('sessionData', DATA_DIR)
-}
-
-if (!fs.existsSync(SCANS_DIR)) {
-  fs.mkdirSync(SCANS_DIR, { recursive: true })
 }
 
 // The built directory structure
@@ -52,9 +61,15 @@ let win: BrowserWindow | null
 function createWindow() {
   win = new BrowserWindow({
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    show: false,
+    backgroundColor: '#f8fafc',
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
     },
+  })
+
+  win.once('ready-to-show', () => {
+    win?.show()
   })
 
   // Test active push message to Renderer-process.
@@ -74,18 +89,108 @@ function createWindow() {
 ipcMain.handle('save-scan', async (_event, { last5, location }) => {
   if (!last5) return { success: false, error: 'No last5 provided' }
 
-  const fileName = `ids_${location || 'unknown'}.bin`
-  const filePath = path.join(SCANS_DIR, fileName)
+  const filePath = getScanFilePath(location)
   
   const buffer = Buffer.alloc(2)
   buffer.writeUInt16LE(parseInt(last5, 10), 0)
   
   try {
+    await storageReady
     fs.appendFileSync(filePath, buffer)
     return { success: true }
   } catch (err) {
     console.error('Failed to write to file:', err)
     return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('has-scan-data', async (_event, { location }) => {
+  if (!location || typeof location !== 'string') {
+    return { success: false, error: 'Invalid location', hasData: false }
+  }
+
+  const filePath = getScanFilePath(location)
+
+  try {
+    await storageReady
+    const stat = await fs.promises.stat(filePath)
+    return { success: true, hasData: stat.size > 0 }
+  } catch (err) {
+    const error = err as NodeJS.ErrnoException
+    if (error.code === 'ENOENT') {
+      return { success: true, hasData: false }
+    }
+    console.error('Failed to check scan file:', err)
+    return { success: false, hasData: false, error: error.message }
+  }
+})
+
+ipcMain.handle('delete-scan-value', async (_event, { location, last5 }) => {
+  if (!location || typeof location !== 'string') {
+    return { success: false, error: 'Invalid location', removed: false }
+  }
+  if (!last5 || typeof last5 !== 'string') {
+    return { success: false, error: 'Invalid last5', removed: false }
+  }
+
+  const filePath = getScanFilePath(location)
+  const target = Number.parseInt(last5, 10)
+  if (Number.isNaN(target)) {
+    return { success: false, error: 'Invalid number', removed: false }
+  }
+
+  try {
+    await storageReady
+    const file = await fs.promises.readFile(filePath)
+
+    if (file.length % 2 !== 0) {
+      return { success: false, error: 'Invalid binary data', removed: false }
+    }
+
+    let removeOffset = -1
+    for (let offset = file.length - 2; offset >= 0; offset -= 2) {
+      if (file.readUInt16LE(offset) === target) {
+        removeOffset = offset
+        break
+      }
+    }
+
+    if (removeOffset < 0) {
+      return { success: true, removed: false }
+    }
+
+    const rewritten = Buffer.concat([
+      file.subarray(0, removeOffset),
+      file.subarray(removeOffset + 2),
+    ])
+
+    await fs.promises.writeFile(filePath, rewritten)
+    return { success: true, removed: true }
+  } catch (err) {
+    const error = err as NodeJS.ErrnoException
+    if (error.code === 'ENOENT') {
+      return { success: true, removed: false }
+    }
+    console.error('Failed to delete scan value:', err)
+    return { success: false, error: error.message, removed: false }
+  }
+})
+
+ipcMain.handle('clear-all-scans', async () => {
+  try {
+    await storageReady
+    const entries = await fs.promises.readdir(SCANS_DIR, { withFileTypes: true })
+
+    const targets = entries
+      .filter((entry) => entry.isFile() && entry.name.startsWith(SCAN_FILE_PREFIX) && entry.name.endsWith(SCAN_FILE_SUFFIX))
+      .map((entry) => fs.promises.unlink(path.join(SCANS_DIR, entry.name)))
+
+    await Promise.all(targets)
+    return { success: true }
+  } catch (err) {
+    const error = err as Error
+    console.error('Failed to clear scan files:', err)
+    return { success: false, error: error.message }
   }
 })
 
